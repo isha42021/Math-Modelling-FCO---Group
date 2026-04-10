@@ -47,19 +47,6 @@ The model converged for **100% of participants**, confirming its ability to desc
 
 ---
 
-## Repository Structure
-
-Math-Modelling-FCO---Group/
-├── README.md # This file
-├── .gitignore # Ignore temporary files
-├── data/
-│ └── [SURVEY] Coffee Shop Study Productivity_ A Logistic Growth Model of Focus Over Time (Responses).xlsx
-├── src/
-│ ├── focus_analysis.m # Main analysis script
-│ └── logistic_focus.m # Logistic model function (with decay term)
-├── outputs/ # Generated when you run the script
-│ ├── plots/ # All figures (.png)
-│ └── tables/ # Parameter tables (.csv)
 
 > **Note**: The `outputs/` folder will be created automatically when you run the script.
 
@@ -72,4 +59,4 @@ Math-Modelling-FCO---Group/
 ```bash
 git clone https://github.com/isha42021/Math-Modelling-FCO---Group.git
 cd Math-Modelling-FCO---Group
-
+```
