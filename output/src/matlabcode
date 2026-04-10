@@ -1,0 +1,314 @@
+% Load the file preserving original headers
+filename = '[SURVEY] Coffee Shop Study Productivity_ A Logistic Growth Model of Focus Over Time (Responses)';
+data = readtable(filename, 'Sheet', 'Form responses 1', 'VariableNamingRule', 'preserve');
+
+% Extract environment and caffeine timing columns
+env_str = data{:, 'Where did this session take place?'};
+caffeine_str = data{:, 'When did you consume caffeine relative to the start if your study session?'};
+
+% Get the variable names
+varnames = data.Properties.VariableNames;
+
+% Focus columns are indices 10 to 16
+focus_cols = varnames(10:16);
+disp('Focus columns:');
+disp(focus_cols);
+
+% Preallocate numeric matrix
+focus_numeric = zeros(height(data), length(focus_cols));
+
+for i = 1:length(focus_cols)
+    col = data{:, focus_cols{i}};
+    if iscell(col)
+        % Convert cell array to numeric (strings become NaN)
+        focus_numeric(:,i) = str2double(col);
+    else
+        focus_numeric(:,i) = col;
+    end
+end
+
+% Check first few rows
+disp('First 5 rows of focus data:');
+disp(focus_numeric(1:5, :));
+
+% env_str and caffeine_str are already in workspace
+% focus_numeric is now correct
+
+% Use env_str and caffeine_str already in workspace
+T = table(env_str, caffeine_str, ...
+          focus_numeric(:,1), focus_numeric(:,2), focus_numeric(:,3), ...
+          focus_numeric(:,4), focus_numeric(:,5), focus_numeric(:,6), focus_numeric(:,7), ...
+          'VariableNames', {'Environment','CaffeineTiming', ...
+                            'Focus_0','Focus_30','Focus_60', ...
+                            'Focus_90','Focus_120','Focus_150','Focus_180'});
+
+% Compute session length (last non-NaN column)
+times = [0,30,60,90,120,150,180];
+T.SessionLength = zeros(height(T),1);
+for i = 1:height(T)
+    foc = T{i, 3:9};
+    last = find(~isnan(foc), 1, 'last');
+    if ~isempty(last)
+        T.SessionLength(i) = times(last);
+    else
+        T.SessionLength(i) = NaN;
+    end
+end
+
+% Verify
+disp(T(1:5, :));
+
+% Find participant with most non-NaN focus values
+valid_counts = sum(~isnan(focus_numeric), 2);
+[~, best_idx] = max(valid_counts);
+fprintf('Participant %d has %d valid focus points.\n', best_idx, valid_counts(best_idx));
+
+% Extract data
+t_obs = times(times <= T.SessionLength(best_idx))';
+foc_obs = T{best_idx, 3:9}';
+valid = ~isnan(foc_obs);
+t_obs = t_obs(valid);
+foc_obs = foc_obs(valid);
+
+% Initial guesses
+L0 = max(foc_obs);
+k0 = 0.1;
+t0_0 = 45;
+d0 = 0.001;
+ti0 = 120;   % will be bounded by session length
+b0 = foc_obs(1);
+p0 = [L0, k0, t0_0, d0, ti0, b0];
+
+% Bounds
+lb = [0, 0, 0, 0, 0, 0];
+ub = [10, 1, 180, 0.1, T.SessionLength(best_idx), 10];
+
+% Options
+opts = optimoptions('lsqcurvefit', 'Display', 'iter', 'MaxFunctionEvaluations', 2000);
+
+% Fit
+p_fit = lsqcurvefit(@logistic_focus, p0, t_obs, foc_obs, lb, ub, opts);
+disp('Fitted parameters:');
+disp(p_fit);
+
+% Plot
+t_fine = linspace(0, T.SessionLength(best_idx), 200);
+f_fine = logistic_focus(p_fit, t_fine);
+figure;
+plot(t_obs, foc_obs, 'ro', t_fine, f_fine, 'b-');
+xlabel('Time (minutes)'); ylabel('Focus (1-10)');
+title(sprintf('Participant %d', best_idx));
+legend('Data', 'Fitted model');
+grid on;
+
+params_all = zeros(height(T), 6);
+fits_failed = false(height(T),1);
+opts = optimoptions('lsqcurvefit', 'Display', 'off');
+
+for i = 1:height(T)
+    foc = T{i, 3:9};
+    max_time = T.SessionLength(i);
+    t_obs = times(times <= max_time)';
+    foc_obs = foc(1:length(t_obs))';
+    valid = ~isnan(foc_obs);
+    t_obs = t_obs(valid);
+    foc_obs = foc_obs(valid);
+    
+    if length(t_obs) < 3
+        fits_failed(i) = true;
+        continue;
+    end
+    
+    % Initial guesses (adjust slightly)
+    L0 = max(foc_obs);
+    k0 = 0.1;
+    t0_0 = 45;
+    d0 = 0.001;
+    ti0 = 120;
+    b0 = foc_obs(1);
+    p0 = [L0, k0, t0_0, d0, ti0, b0];
+    
+    lb = [0, 0, 0, 0, 0, 0];
+    ub = [10, 1, 180, 0.1, max_time, 10];
+    
+    try
+        p_fit = lsqcurvefit(@logistic_focus, p0, t_obs, foc_obs, lb, ub, opts);
+        params_all(i,:) = p_fit;
+    catch
+        fits_failed(i) = true;
+    end
+end
+
+fprintf('Successfully fitted %d out of %d participants.\n', sum(~fits_failed), height(T));
+
+T.L = params_all(:,1);
+T.k = params_all(:,2);
+T.t0 = params_all(:,3);
+T.d = params_all(:,4);
+T.ti = params_all(:,5);
+T.b = params_all(:,6);
+T.FitFailed = fits_failed;
+
+good = ~fits_failed;
+coffee = good & contains(T.Environment, 'Coffee Shop');
+library = good & contains(T.Environment, 'Library');
+dorm = good & contains(T.Environment, 'Dormitory');
+
+coffee_params = params_all(coffee,:);
+library_params = params_all(library,:);
+dorm_params = params_all(dorm,:);
+
+coffee_mean = mean(coffee_params,1);
+library_mean = mean(library_params,1);
+dorm_mean = mean(dorm_params,1);
+
+t_plot = 0:1:210;
+f_coffee = logistic_focus(coffee_mean, t_plot);
+f_library = logistic_focus(library_mean, t_plot);
+f_dorm = logistic_focus(dorm_mean, t_plot);
+
+figure; hold on;
+plot(t_plot, f_coffee, 'b-', 'LineWidth', 2);
+plot(t_plot, f_library, 'g-', 'LineWidth', 2);
+plot(t_plot, f_dorm, 'r-', 'LineWidth', 2);
+
+% Mark inflection points (ti)
+plot(coffee_mean(5), logistic_focus(coffee_mean, coffee_mean(5)), 'bo', 'MarkerSize', 8, 'MarkerFaceColor', 'b');
+plot(library_mean(5), logistic_focus(library_mean, library_mean(5)), 'go', 'MarkerSize', 8, 'MarkerFaceColor', 'g');
+plot(dorm_mean(5), logistic_focus(dorm_mean, dorm_mean(5)), 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');
+
+xlabel('Time (minutes)'); ylabel('Focus (1-10)');
+title('Average Focus Curves by Environment');
+legend('Coffee Shop', 'Library', 'Dorm', 'Location', 'best');
+grid on;
+
+threshold = 0.7;
+env_names = {'Coffee Shop','Library','Dorm'};
+avg_params = [coffee_mean; library_mean; dorm_mean];
+opt_lengths = zeros(3,1);
+
+for g = 1:3
+    p = avg_params(g,:);
+    t_fine = 0:1:240;
+    f_fine = logistic_focus(p, t_fine);
+    peak = max(f_fine);
+    target = threshold * peak;
+    [~, peak_idx] = max(f_fine);
+    idx = find(f_fine(peak_idx:end) <= target, 1, 'first');
+    if ~isempty(idx)
+        opt_lengths(g) = t_fine(peak_idx + idx - 1);
+    else
+        opt_lengths(g) = t_fine(end);
+    end
+end
+
+% Display
+for g = 1:3
+    fprintf('%s optimal session length: %.0f minutes (%.1f hours)\n', ...
+        env_names{g}, opt_lengths(g), opt_lengths(g)/60);
+end
+
+% Plot average curves
+t_plot = 0:1:240;
+f_coffee = logistic_focus(coffee_mean, t_plot);
+f_library = logistic_focus(library_mean, t_plot);
+f_dorm = logistic_focus(dorm_mean, t_plot);
+
+figure('Position', [100 100 800 500]);
+hold on;
+plot(t_plot, f_coffee, 'b-', 'LineWidth', 2);
+plot(t_plot, f_library, 'g-', 'LineWidth', 2);
+plot(t_plot, f_dorm, 'r-', 'LineWidth', 2);
+
+% Mark inflection points (ti)
+plot(coffee_mean(5), logistic_focus(coffee_mean, coffee_mean(5)), 'bo', 'MarkerSize', 8, 'MarkerFaceColor', 'b');
+plot(library_mean(5), logistic_focus(library_mean, library_mean(5)), 'go', 'MarkerSize', 8, 'MarkerFaceColor', 'g');
+plot(dorm_mean(5), logistic_focus(dorm_mean, dorm_mean(5)), 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');
+
+% Add horizontal line for 70% of peak (optional)
+peak_coffee = max(f_coffee);
+y70 = 0.7 * peak_coffee;
+yline(y70, 'k--', '70% of peak', 'LabelHorizontalAlignment', 'left');
+
+xlabel('Time (minutes)');
+ylabel('Focus (1-10)');
+title('Average Focus Curves by Environment (Logistic Model)');
+legend('Coffee Shop', 'Library', 'Dorm', 'Inflection', 'Location', 'best');
+grid on;
+
+% Collect ti values for successful fits
+ti_coffee = params_all(coffee, 5);
+ti_library = params_all(library, 5);
+ti_dorm = params_all(dorm, 5);
+
+% Group data for boxplot
+group = [ones(size(ti_coffee)); 2*ones(size(ti_library)); 3*ones(size(ti_dorm))];
+data = [ti_coffee; ti_library; ti_dorm];
+
+figure('Position', [100 100 600 400]);
+boxplot(data, group, 'Labels', {'Coffee Shop','Library','Dorm'});
+ylabel('Inflection Point (minutes)');
+title('When Focus First Begins to Drop');
+grid on;
+
+figure('Position', [100 100 600 400]);
+bar(opt_lengths, 'FaceColor', [0.5 0.6 0.8]);
+set(gca, 'XTickLabel', {'Coffee Shop','Library','Dorm'});
+ylabel('Optimal Session Length (minutes)');
+title('Recommended Study Duration Before Diminishing Returns');
+grid on;
+
+% Annotate bars with exact times
+for i = 1:3
+    text(i, opt_lengths(i)+5, sprintf('%.0f min\n(%.1f h)', opt_lengths(i), opt_lengths(i)/60), ...
+         'HorizontalAlignment', 'center', 'FontSize', 9);
+end
+
+% Use the caffeine timing groups defined earlier (before, after)
+% Make sure they are logical vectors matching the rows
+before = contains(T.CaffeineTiming, 'before') & ~fits_failed;
+after = contains(T.CaffeineTiming, 'After') & ~fits_failed;
+
+params_before = mean(params_all(before,:), 1);
+params_after = mean(params_all(after,:), 1);
+
+t_plot = 0:1:210;
+f_before = logistic_focus(params_before, t_plot);
+f_after = logistic_focus(params_after, t_plot);
+
+figure('Position', [100 100 700 450]);
+plot(t_plot, f_before, 'b-', 'LineWidth', 2); hold on;
+plot(t_plot, f_after, 'r--', 'LineWidth', 2);
+xlabel('Time (minutes)'); ylabel('Focus');
+title('Effect of Caffeine Timing on Focus');
+legend('Caffeine Before Start', 'Caffeine After Start', 'Location', 'best');
+grid on;
+
+% Optional: mark inflection points
+plot(params_before(5), logistic_focus(params_before, params_before(5)), 'bo');
+plot(params_after(5), logistic_focus(params_after, params_after(5)), 'ro');
+
+fprintf('\n--- Model Parameters (Mean ± SD) ---\n');
+fprintf('Coffee Shop: L=%.2f±%.2f, k=%.3f±%.3f, t0=%.1f±%.1f, ti=%.1f±%.1f, d=%.4f±%.4f, b=%.1f±%.1f\n', ...
+    mean(coffee_params(:,1)), std(coffee_params(:,1)), ...
+    mean(coffee_params(:,2)), std(coffee_params(:,2)), ...
+    mean(coffee_params(:,3)), std(coffee_params(:,3)), ...
+    mean(coffee_params(:,5)), std(coffee_params(:,5)), ...
+    mean(coffee_params(:,4)), std(coffee_params(:,4)), ...
+    mean(coffee_params(:,6)), std(coffee_params(:,6)));
+
+fprintf('Library:      L=%.2f±%.2f, k=%.3f±%.3f, t0=%.1f±%.1f, ti=%.1f±%.1f, d=%.4f±%.4f, b=%.1f±%.1f\n', ...
+    mean(library_params(:,1)), std(library_params(:,1)), ...
+    mean(library_params(:,2)), std(library_params(:,2)), ...
+    mean(library_params(:,3)), std(library_params(:,3)), ...
+    mean(library_params(:,5)), std(library_params(:,5)), ...
+    mean(library_params(:,4)), std(library_params(:,4)), ...
+    mean(library_params(:,6)), std(library_params(:,6)));
+
+fprintf('Dorm:         L=%.2f±%.2f, k=%.3f±%.3f, t0=%.1f±%.1f, ti=%.1f±%.1f, d=%.4f±%.4f, b=%.1f±%.1f\n', ...
+    mean(dorm_params(:,1)), std(dorm_params(:,1)), ...
+    mean(dorm_params(:,2)), std(dorm_params(:,2)), ...
+    mean(dorm_params(:,3)), std(dorm_params(:,3)), ...
+    mean(dorm_params(:,5)), std(dorm_params(:,5)), ...
+    mean(dorm_params(:,4)), std(dorm_params(:,4)), ...
+    mean(dorm_params(:,6)), std(dorm_params(:,6)));
